@@ -55,13 +55,15 @@ def request(host:, path:, method:, params: nil, cookie_file: nil, verbosity: nil
       #{Tty.blue}Cookie:#{Tty.reset} #{cookie_file || "not used"}
   EOS
 
-  format = <<~EOS
+  stats_kv = {
+          "Status" => :http_code,
+    "Content-Type" => :content_type,
+        "Redirect" => :redirect_url,
+            "Time" => :time_total,
+  }
 
-        #{Tty.white}Status:#{Tty.reset} %{http_code}
-  #{Tty.white}Content-Type:#{Tty.reset} %{content_type}
-      #{Tty.white}Redirect:#{Tty.reset} %{redirect_url}
-          #{Tty.white}Time:#{Tty.reset} %{time_total}s
-  EOS
+  format_splitter = ?|
+  format = "\n#{stats_kv.values.map{|s| "%{#{s}}" }.join(format_splitter)}"
 
   cmd = []
   cmd << "curl"
@@ -81,7 +83,26 @@ def request(host:, path:, method:, params: nil, cookie_file: nil, verbosity: nil
   puts cmd.join(?\s).gsub(?\n, "\\n") if verbosity || dry_run
 
   print "    #{Tty.yellow}Response:#{Tty.reset} "
-  puts `#{cmd.join(?\s)}` if not dry_run
+  return if dry_run
+
+  *output, stats = `#{cmd.join(?\s)}`.lines
+  puts output
+
+  stats_kv.keys.zip(stats.split(format_splitter)).map do |(k, v)|
+    print "#{?\s * (12 - k.length)}#{Tty.white}#{k}#{Tty.reset}: "
+    puts case k
+      when "Status"
+        case v.to_i
+        when 200..299 then Tty.green
+        when 300..399 then Tty.yellow
+        when 400..499 then Tty.blue
+        when 500..599 then Tty.red
+        else Tty.reset
+        end + v + Tty.reset
+      when "Time" then "#{v}s"
+      else v
+      end
+  end
 end
 
 opt = OptionParser.new
