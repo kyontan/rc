@@ -144,7 +144,7 @@ if requests_path
   exit
 end
 
-if ARGV.first.start_with? ?/
+if ARGV.first&.start_with? ?/
   path = ARGV.shift
 else
   host = ARGV.shift
