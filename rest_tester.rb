@@ -46,16 +46,17 @@ module Tty extend self
   end
 end
 
-def request(host:, path:, method:, params: nil, cookie_file: nil, verbosity: nil, dry_run: false)
-  cookie_file = nil if cookie_file == "none"
-  print <<-EOS
+def request(host:, path:, method:, params: nil, **opts)
+  opts[:cookie_file] = nil if opts[:cookie_file] == "none"
+
+  print <<-EOS if not opts[:only_output]
       #{Tty.blue}  Host:#{Tty.reset} #{host}
       #{Tty.blue}  Path:#{Tty.reset} #{path}
       #{Tty.blue}Params:#{Tty.reset} #{params}
-      #{Tty.blue}Cookie:#{Tty.reset} #{cookie_file || "not used"}
+      #{Tty.blue}Cookie:#{Tty.reset} #{opts[:cookie_file] || "not used"}
   EOS
 
-  stats_kv = {
+  stat_opts = {
           "Status" => :http_code,
     "Content-Type" => :content_type,
         "Redirect" => :redirect_url,
@@ -63,32 +64,45 @@ def request(host:, path:, method:, params: nil, cookie_file: nil, verbosity: nil
   }
 
   format_splitter = ?|
-  format = "\n#{stats_kv.values.map{|s| "%{#{s}}" }.join(format_splitter)}"
+  format = "\n#{stat_opts.values.map{|s| "%{#{s}}" }.join(format_splitter)}"
 
   cmd = []
   cmd << "curl"
-  cmd << "-b #{cookie_file}" if cookie_file
-  cmd << "-c #{cookie_file}" if cookie_file
+  cmd << "-b #{opts[:cookie_file]}" if opts[:cookie_file]
+  cmd << "-c #{opts[:cookie_file]}" if opts[:cookie_file]
   cmd << "-H 'Accept: application/json'"
   # cmd << "-H 'Origin: #{host}'"
   cmd << "-X #{method}"
   cmd << "-H 'Content-type: application/json'" if params.is_a? String
   cmd << "-d '#{params}'" if params.is_a? String
   cmd << "-d '#{params.map{|k, v| "#{k}=#{v}"}.join(?&)}'" if params.is_a? Hash
-  cmd << "-#{?v * verbosity}" if verbosity
-  cmd << "-s" if not verbosity
+  cmd << "-#{?v * opts[:verbosity]}" if opts[:verbosity]
+  cmd << "-s" if not opts[:verbosity]
   cmd << "-w '#{format}'"
   cmd << host + path
 
-  puts cmd.join(?\s).gsub(?\n, "\\n") if verbosity || dry_run
+  puts cmd.join(?\s).gsub(?\n, "\\n") if opts[:verbosity] || opts[:dry_run]
 
-  print "    #{Tty.yellow}Response:#{Tty.reset} "
-  return if dry_run
+  return if opts[:dry_run]
 
-  *output, stats = `#{cmd.join(?\s)}`.lines
-  puts output
 
-  stats_kv.keys.zip(stats.split(format_splitter)).map do |(k, v)|
+  *output_lines, stat_values = `#{cmd.join(?\s)}`.lines
+
+  if not (code = $?.exitstatus).zero?
+    STDERR.puts "       #{Tty.red}Error:#{Tty.reset} Process failed with exit status #{code}"
+    return
+  end
+
+  stats = Hash[stat_opts.keys.zip(stat_values.split(format_splitter))]
+
+  output_leftpad = opts[:only_output] ? 0 : 6
+
+  output_lines = JSON.pretty_generate(JSON.parse(output_lines.join)).lines if stats["Content-Type"] == "application/json"
+
+  puts "    #{Tty.yellow}Response:#{Tty.reset} " if not opts[:only_output]
+  output_lines.each{|line| puts ?\s * output_leftpad + line }
+
+  stats.map do |(k, v)|
     print "#{?\s * (12 - k.length)}#{Tty.white}#{k}#{Tty.reset}: "
     puts case k
       when "Status"
@@ -102,7 +116,7 @@ def request(host:, path:, method:, params: nil, cookie_file: nil, verbosity: nil
       when "Time" then "#{v}s"
       else v
       end
-  end
+  end if not opts[:only_output]
 end
 
 opt = OptionParser.new
@@ -112,8 +126,7 @@ host          = "http://localhost:3000"
 cookie_files  = []
 params        = nil
 requests_path = nil
-verbosity     = nil
-dry_run       = false
+other_opts    = { verbosity: nil, dry_run: false, only_output: false }
 
 opt.on("-m method", "--method method") {|m| method = m.upcase }
 opt.on("--GET",    %(Shorthand of --method GET"))    { method = "GET" }
@@ -129,9 +142,10 @@ opt.on("-c cookie-file", "--cookie cookie-file") {|f| cookie_files += f.split(/\
 opt.on("-j json", "--json json")      {|j| params = j }
 opt.on("-r hash", "--ruby ruby-hash") {|h| eval(h).to_json }
 
-opt.on("-v [verbosity]", "--verbosity [verbosity]") {|v| verbosity = v.nil? ? 1 : v.to_i }
+opt.on("-v [verbosity]", "--verbosity [verbosity]") {|v| other_opts[:verbosity] = v.nil? ? 1 : v.to_i }
 
-opt.on("-d", "--dry-run") {|v| dry_run = true }
+opt.on("-d", "--dry-run") {|v| other_opts[:dry_run] = true }
+opt.on("-o", "--only-output") {|v| other_opts[:only_output] = true }
 
 # request format: {method: "GET", path: "/hogehoge", params: { login: "hoge", password: "hoge"}, cookie_file: "filepath"}
 # request_json: `request format` or Array of `request format`
@@ -158,7 +172,7 @@ if requests_path
 
     current_cookie_files = cookie_files.empty? ? [request_hash["cookie_file"]] : cookie_files
     current_cookie_files.each do |cf|
-      request_from_hash(request_hash, host, cookie_file: cf, verbosity: verbosity, dry_run: dry_run)
+      request_from_hash(request_hash, host, cookie_file: cf, **other_opts)
     end
   end
 
@@ -183,12 +197,12 @@ params ||= ARGV.join(" ") \
              .scan(/[^\s]+=(?:\\[#{escape}]|[^#{escape}])+/) \
              .map{|x| x.gsub(/\\([#{escape}])/, '\1') }
 
-opts = { host: host, path: path, method: method, params: params, dry_run: dry_run }
+opts = { host: host, path: path, method: method, params: params, **other_opts }
 
 if cookie_files.count.zero?
   request(**opts)
 else
   cookie_files.each do |cookie_file|
-    request(**opts, cookie_file: cookie_file, verbosity: verbosity)
+    request(**opts, cookie_file: cookie_file, **other_opts)
   end
 end
