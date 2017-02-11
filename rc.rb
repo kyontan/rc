@@ -111,7 +111,7 @@ def request(host:, path:, method:, params: nil, **opts)
 
   puts "#{Tty.leftpad("Response:", 13, Tty.yellow)} " if not opts[:only_output]
 
-  output_lines = `echo #{output_lines.join.shellescape} | #{opts[:pipe_cmd]}` if opts[:pipe_cmd]
+  output_lines = `echo #{output_lines.join.shellescape} | #{opts[:pipe_cmd]}`.lines if opts[:pipe_cmd]
 
   output_lines.each{|line| puts ?\s * output_leftpad + line }
 
