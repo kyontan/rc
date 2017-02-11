@@ -5,7 +5,10 @@
 # Licenced by CC0 (https://creativecommons.org/publicdomain/zero/1.0/deed.ja) except for module TTy
 
 require "optparse"
+require "shellwords"
 require "json"
+
+Signal.trap("PIPE", "EXIT")
 
 # module Tty:
 #   Copyright (c) 2013, なつき
@@ -27,6 +30,10 @@ module Tty extend self
   def green; color 92 end
   def gray; bold 30 end
 
+  def leftpad str, len, color = nil
+    (?\s * (len - str.length)) + (color || "") + str + (color && reset || "")
+  end
+
   private
 
   def color n
@@ -42,18 +49,20 @@ module Tty extend self
   end
 
   def escape n
-    "\033[#{n}m" if $stdout.tty?
+    "\033[#{n}m" # if $stdout.tty?
   end
 end
 
 def request(host:, path:, method:, params: nil, **opts)
   opts[:cookie_file] = nil if opts[:cookie_file] == "none"
 
-  print <<-EOS if not opts[:only_output]
-      #{Tty.blue}  Host:#{Tty.reset} #{host}
-      #{Tty.blue}  Path:#{Tty.reset} #{path}
-      #{Tty.blue}Params:#{Tty.reset} #{params}
-      #{Tty.blue}Cookie:#{Tty.reset} #{opts[:cookie_file] || "not used"}
+  pad_width, color = 13, Tty.blue
+
+  print <<~EOS if not opts[:only_output]
+  #{Tty.leftpad("Host:", pad_width, color)} #{host}
+  #{Tty.leftpad("Path:", pad_width, color)} #{path}
+  #{Tty.leftpad("Params:", pad_width, color)} #{params}
+  #{Tty.leftpad("Cookie:", pad_width, color)} #{opts[:cookie_file] || "not used"}
   EOS
 
   stat_opts = {
@@ -89,21 +98,25 @@ def request(host:, path:, method:, params: nil, **opts)
   *output_lines, stat_values = `#{cmd.join(?\s)}`.lines
 
   if not (code = $?.exitstatus).zero?
-    STDERR.puts "       #{Tty.red}Error:#{Tty.reset} Process failed with exit status #{code}"
+    STDERR.puts "#{Tty.leftpad("Error:", 11, Tty.red)} Process failed with exit status #{code}"
     return
   end
 
   stats = Hash[stat_opts.keys.zip(stat_values.split(format_splitter))]
 
-  output_leftpad = opts[:only_output] ? 0 : 6
+  # output_leftpad = opts[:only_output] ? 0 : 6
+  output_leftpad = 0
 
   output_lines = JSON.pretty_generate(JSON.parse(output_lines.join)).lines if stats["Content-Type"] == "application/json"
 
-  puts "    #{Tty.yellow}Response:#{Tty.reset} " if not opts[:only_output]
+  puts "#{Tty.leftpad("Response:", 13, Tty.yellow)} " if not opts[:only_output]
+
+  output_lines = `echo #{output_lines.join.shellescape} | #{opts[:pipe_cmd]}` if opts[:pipe_cmd]
+
   output_lines.each{|line| puts ?\s * output_leftpad + line }
 
   stats.map do |(k, v)|
-    print "#{?\s * (12 - k.length)}#{Tty.white}#{k}#{Tty.reset}: "
+    print "#{Tty.leftpad(k + ?:, 13, Tty.white)} "
     puts case k
       when "Status"
         case v.to_i
@@ -119,6 +132,10 @@ def request(host:, path:, method:, params: nil, **opts)
   end if not opts[:only_output]
 end
 
+def print_split_line(len = 40)
+  puts ?- * [len, `tput cols`.to_i].min
+end
+
 opt = OptionParser.new
 
 method        = "GET"
@@ -126,7 +143,7 @@ host          = "http://localhost:3000"
 cookie_files  = []
 params        = nil
 requests_path = nil
-other_opts    = { verbosity: nil, dry_run: false, only_output: false }
+other_opts    = { verbosity: nil, dry_run: false, only_output: false, pipe_cmd: nil }
 
 opt.on("-m method", "--method method") {|m| method = m.upcase }
 opt.on("--GET",    %(Shorthand of --method GET"))    { method = "GET" }
@@ -154,6 +171,21 @@ opt.on("-f request-file", "--file requst-file") {|f| requests_path = f }
 opt.parse!(ARGV)
 
 if requests_path
+elsif ARGV.first&.start_with? ?/
+  path = ARGV.shift
+else
+  host = ARGV.shift
+  path = ARGV.shift
+
+  if not path
+    puts opt
+    exit
+  end
+end
+
+other_opts[:pipe_cmd] = ARGV.map(&:shellescape).join(?\s) if not ARGV.empty?
+
+if requests_path
   def request_from_hash(hash, override_host = nil, **opts)
     request(**opts,
            host: override_host || hash["host"],
@@ -171,24 +203,13 @@ if requests_path
     raise "Can't understand format of request file." if not request_hash.is_a? Hash
 
     current_cookie_files = cookie_files.empty? ? [request_hash["cookie_file"]] : cookie_files
-    current_cookie_files.each do |cf|
+    current_cookie_files.each.with_index do |cf, i|
+      print_split_line if not i.zero?
       request_from_hash(request_hash, host, cookie_file: cf, **other_opts)
     end
   end
 
   exit
-end
-
-if ARGV.first&.start_with? ?/
-  path = ARGV.shift
-else
-  host = ARGV.shift
-  path = ARGV.shift
-
-  if not path
-    puts opt
-    exit
-  end
 end
 
 escape = '\\\\\\s=' # backslash, spaces, '=' ','
@@ -202,7 +223,8 @@ opts = { host: host, path: path, method: method, params: params, **other_opts }
 if cookie_files.count.zero?
   request(**opts)
 else
-  cookie_files.each do |cookie_file|
+  Dir[*cookie_files].flatten.each.with_index do |cookie_file, i|
+    print_split_line if not i.zero?
     request(**opts, cookie_file: cookie_file, **other_opts)
   end
 end
