@@ -113,10 +113,11 @@ def request(host:, path:, method:, params: nil, **opts)
   puts "#{Tty.leftpad("Response:", 13, Tty.yellow)} " if not opts[:only_output]
 
   if opts[:pipe_cmd]
-    tf = Tempfile.new
-    tf.write output_lines.join
-    output_lines = `cat #{tf.path} | #{opts[:pipe_cmd]}`.lines
-    tf.delete
+    Tempfile.create do |tf|
+      tf.write output_lines.join
+      tf.size # HACK!!!!
+      output_lines = `cat #{tf.path} | #{opts[:pipe_cmd]}`.lines
+    end
   end
 
   output_lines.each{|line| puts ?\s * output_leftpad + line }
